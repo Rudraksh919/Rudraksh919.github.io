@@ -28,7 +28,8 @@ jobs:
       - name: Build
         run: npm run build
         env:
-          MONGO_URI: ${{ secrets.MONGO_URI }}
+          NEXT_PUBLIC_MONGO_DATA_API_KEY: ${{ secrets.NEXT_PUBLIC_MONGO_DATA_API_KEY }}
+          NEXT_PUBLIC_MONGO_DATA_API_URL: ${{ secrets.NEXT_PUBLIC_MONGO_DATA_API_URL }}
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
