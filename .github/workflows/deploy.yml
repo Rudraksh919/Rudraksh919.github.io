@@ -30,9 +30,9 @@ jobs:
         env:
           MONGO_URI: ${{ secrets.MONGO_URI }}
       - name: Upload artifact
-        uses: actions/upload-pages-artifact@v4
+        uses: actions/upload-pages-artifact@v3
         with:
-          path: ./out
+          path: ./out   # or ./build / ./dist depending on your app
 
   deploy:
     environment:
