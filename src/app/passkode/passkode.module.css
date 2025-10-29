@@ -338,6 +338,50 @@
   margin-top: 4px;
 }
 
+/* Choice screen styling (Sign in / Sign up) */
+.choice {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  align-items: center;
+  padding: 36px 24px;
+}
+
+.choice .choiceTitle {
+  font-size: 18px;
+  font-weight: 600;
+}
+
+.choice .choiceSubtitle {
+  color: #9fb3c8;
+}
+
+.choiceButtons {
+  display: flex;
+  gap: 12px;
+  margin-top: 8px;
+}
+
+.searchWrapper {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.searchInput {
+  width: 220px;
+  background: rgba(255,255,255,0.02);
+  border: 1px solid rgba(255,255,255,0.04);
+  padding: 8px 10px;
+  border-radius: 8px;
+  color: #e6eef8;
+}
+
+.importNote {
+  font-size: 12px;
+  color: #9fb3c8;
+}
+
 .strengthBar{ 
   height: 100%;
   transition: width 200ms ease;

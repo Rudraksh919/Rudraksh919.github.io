@@ -1,10 +1,15 @@
 /** @type {import('next').NextConfig} */
-const nextConfig = {
-  output: 'export',  // Enable static exports
-  images: {
-    unoptimized: true, // Required for static export
-  },
-  basePath: process.env.NODE_ENV === 'production' ? '/rudraksh-website' : '', // Adjust this to your repo name
-}
+const nextConfig = process.env.NODE_ENV === 'development' 
+  ? {
+      // Development config - with API routes
+    }
+  : {
+      // Production config - static export
+      output: 'export',
+      images: {
+        unoptimized: true,
+      },
+      basePath: '/Rudraksh919.github.io'
+    }
 
 module.exports = nextConfig

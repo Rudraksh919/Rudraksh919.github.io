@@ -78,6 +78,8 @@ export default function PasskodePage() {
   const [inputReveal, setInputReveal] = useState(false);
   const [passwordReveal, setPasswordReveal] = useState<Record<string, boolean>>({});
   const [isAddingPassword, setIsAddingPassword] = useState(false);
+  const [searchQuery, setSearchQuery] = useState("");
+  const fileInputRef = useRef<HTMLInputElement | null>(null);
 
   useEffect(() => {
     setMounted(true);
@@ -85,10 +87,9 @@ export default function PasskodePage() {
     const savedEmail = localStorage.getItem("passkode_email");
     if (savedEmail) {
       setEmail(savedEmail);
-      setStatus("locked");
-    } else {
-      setStatus("setup");
     }
+    // Always show the initial choice screen first (Sign in / Sign up)
+    setStatus("choose");
   }, []);
 
   // Helper: Create recovery hash from email + answer
@@ -112,17 +113,23 @@ export default function PasskodePage() {
 
     try {
       // Check if vault exists
-      const res = await fetch('/api/vault', {
+      const checkRes = await fetch('/api/vault', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ 
           action: 'get',
-          data: { email }
+          email
         })
       });
 
-      if (res.ok) {
-        return setError("An account with this email already exists");
+      if (!checkRes.ok) {
+        // If API returned an error, surface it
+        return setError('Failed to check account existence');
+      }
+
+      const existing = await checkRes.json();
+      if (existing) {
+        return setError('An account with this email already exists');
       }
 
       // Create new vault
@@ -142,13 +149,12 @@ export default function PasskodePage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           action: 'create',
-          data: {
-            email,
-            salt: toBase64(salt),
-            iv: enc.iv,
-            cipher: enc.cipher,
-            recoveryHash
-          }
+          email,
+          salt: toBase64(salt),
+          iv: enc.iv,
+          cipher: enc.cipher,
+          recoveryHash,
+          createdAt: Date.now()
         })
       });
 
@@ -156,7 +162,7 @@ export default function PasskodePage() {
         throw new Error('Failed to save vault');
       }
 
-      // Save email and vault locally
+      // Save email locally
       localStorage.setItem("passkode_email", email);
       setVault(empty);
       setMaster("");
@@ -174,21 +180,24 @@ export default function PasskodePage() {
     if (!email) return setError("Email is required");
 
     try {
-      // Fetch vault from MongoDB
-      const res = await fetch('/api/vault', {
+      const response = await fetch('/api/vault', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
           action: 'get',
-          data: { email }
+          email
         })
       });
 
-      if (!res.ok) {
-        return setError("No vault found for this email. Please create one.");
+      if (!response.ok) {
+        throw new Error('Failed to fetch vault');
       }
 
-      const store = await res.json();
+      const store = await response.json();
+      
+      if (!store) {
+        return setError("No vault found for this email. Please create one.");
+      }
 
       try {
         const salt = fromBase64(store.salt);
@@ -219,20 +228,27 @@ export default function PasskodePage() {
     if (!recoveryAnswer) return setError("Recovery answer is required");
 
     try {
-      // Get recovery hash
-      const recoveryHash = await createRecoveryHash(email, recoveryAnswer);
-
-      // Verify recovery hash
-      const res = await fetch('/api/vault', {
+      const vaultRes = await fetch('/api/vault', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
-          action: 'verify-recovery',
-          data: { email, recoveryHash }
+          action: 'get',
+          email
         })
       });
 
-      if (!res.ok) {
+      if (!vaultRes.ok) {
+        return setError("Failed to fetch vault");
+      }
+
+      const vault = await vaultRes.json();
+      if (!vault) {
+        return setError("No vault found for this email");
+      }
+
+      // Verify recovery answer
+      const recoveryHash = await createRecoveryHash(email, recoveryAnswer);
+      if (vault.recoveryHash !== recoveryHash) {
         return setError("Invalid recovery answer");
       }
 
@@ -245,17 +261,113 @@ export default function PasskodePage() {
   }
 
   async function saveVault(newVault: any) {
-    const store = loadStoreRaw();
-    if (!store) throw new Error("Missing store salt");
-    const salt = fromBase64(store.salt);
     // Prefer cached master in session, otherwise prompt the user to enter it
     const pw = masterRef.current || promptPasswordForSave();
     if (!pw) throw new Error("No master password available to encrypt");
-    const key = await deriveKey(pw, salt);
-    // we do not keep master in state for security; to save we ask user to re-enter if necessary
-    const enc = await encryptVault(key, newVault);
-    const newStore = { ...store, iv: enc.iv, cipher: enc.cipher };
-    localStorage.setItem("passkode_store", JSON.stringify(newStore));
+
+    try {
+      const storeRes = await fetch('/api/vault', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'get',
+          email
+        })
+      });
+
+      if (!storeRes.ok) throw new Error("Failed to get vault");
+      const store = await storeRes.json();
+      if (!store) throw new Error("No vault found");
+
+      const salt = fromBase64(store.salt);
+      const key = await deriveKey(pw, salt);
+      const enc = await encryptVault(key, newVault);
+
+      const updateRes = await fetch('/api/vault', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'update',
+          email,
+          iv: enc.iv,
+          cipher: enc.cipher
+        })
+      });
+
+      if (!updateRes.ok) throw new Error("Failed to save vault");
+    } catch (err) {
+      console.error('Save error:', err);
+      throw new Error("Failed to save vault");
+    }
+  }
+
+  // Import helper: accept JSON (array or { entries: [...] }) or simple CSV
+  async function handleImportFile(file: File | null) {
+    if (!file) return;
+    try {
+      const text = await file.text();
+      let parsed: any = null;
+      let imported: any[] = [];
+
+      // Try JSON first
+      try {
+        parsed = JSON.parse(text);
+        if (Array.isArray(parsed)) imported = parsed;
+        else if (parsed && Array.isArray(parsed.entries)) imported = parsed.entries;
+        else throw new Error('Unsupported JSON format');
+      } catch (jsonErr) {
+        // Try CSV: header line, comma separated
+        const lines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+        if (lines.length > 0) {
+          const headers = lines[0].split(/,|;|\t/).map(h => h.trim().toLowerCase());
+          const nameIdx = headers.findIndex(h => /name|site|title/.test(h));
+          const userIdx = headers.findIndex(h => /user|username|email/.test(h));
+          const passIdx = headers.findIndex(h => /pass|password/.test(h));
+          if (passIdx === -1) throw new Error('CSV missing password column');
+          for (let i = 1; i < lines.length; i++) {
+            const cols = lines[i].split(/,|;|\t/).map(c => c.trim());
+            imported.push({
+              id: Date.now().toString(36) + '-' + i,
+              name: nameIdx >= 0 ? cols[nameIdx] : (cols[0] || 'imported'),
+              username: userIdx >= 0 ? cols[userIdx] : (cols[1] || ''),
+              password: cols[passIdx] || '' ,
+              createdAt: Date.now()
+            });
+          }
+        }
+      }
+
+      if (!imported || imported.length === 0) return alert('No entries found in import file');
+
+      // Normalize imported entries and avoid duplicates by name+username
+      const existing = vault.entries || [];
+      const keyOf = (e: any) => (String(e.name || '').toLowerCase() + '|' + String(e.username || '').toLowerCase());
+      const seen = new Set(existing.map(keyOf));
+      const toAdd = imported.map((it: any, idx: number) => ({
+        id: it.id || (Date.now().toString(36) + '-' + idx),
+        name: it.name || it.title || 'imported',
+        username: it.username || it.user || '',
+        password: it.password || it.pass || '',
+        createdAt: it.createdAt || Date.now()
+      })).filter((it: any) => {
+        const k = keyOf(it);
+        if (seen.has(k)) return false;
+        seen.add(k);
+        return true;
+      });
+
+      if (toAdd.length === 0) return alert('No new entries to import');
+
+      const newVault = { ...vault, entries: [...toAdd, ...existing] };
+      await saveVault(newVault);
+      setVault(newVault);
+      alert(`Imported ${toAdd.length} entries`);
+    } catch (err) {
+      console.error('Import failed:', err);
+      alert('Import failed: ' + String(err));
+    } finally {
+      if (fileInputRef.current) fileInputRef.current.value = '';
+    }
   }
 
     // Helper: cache master password for session using a ref so it survives renders
@@ -326,6 +438,20 @@ export default function PasskodePage() {
     if (!store) return alert("No vault found");
 
     try {
+      // Get current store from API
+      const storeRes = await fetch('/api/vault', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'get',
+          email
+        })
+      });
+
+      if (!storeRes.ok) throw new Error("Failed to get vault");
+      const store = await storeRes.json();
+      if (!store) throw new Error("No vault found");
+
       // First verify current password by attempting to decrypt
       const currentSalt = fromBase64(store.salt);
       const currentKey = await deriveKey(currentPassword, currentSalt);
@@ -337,15 +463,22 @@ export default function PasskodePage() {
 
       // Re-encrypt with new key
       const enc = await encryptVault(newKey, currentData);
-      const newStore = { 
-        salt: toBase64(newSalt), 
-        iv: enc.iv, 
-        cipher: enc.cipher, 
-        createdAt: store.createdAt,
-        updatedAt: Date.now()
-      };
 
-      localStorage.setItem("passkode_store", JSON.stringify(newStore));
+      // Save to API
+      const updateRes = await fetch('/api/vault', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          action: 'update',
+          email,
+          salt: toBase64(newSalt),
+          iv: enc.iv,
+          cipher: enc.cipher
+        })
+      });
+
+      if (!updateRes.ok) throw new Error("Failed to save vault");
+
       masterRef.current = newPassword; // Update cached master
       alert("Master password changed successfully");
     } catch (err) {
@@ -383,6 +516,12 @@ export default function PasskodePage() {
   
   if (!mounted) return null;
 
+  const visibleEntries = (vault.entries || []).filter((e: any) => {
+    if (!searchQuery) return true;
+    const q = searchQuery.toLowerCase();
+    return String(e.name || '').toLowerCase().includes(q) || String(e.username || '').toLowerCase().includes(q) || String(e.password || '').toLowerCase().includes(q);
+  });
+
   return (
     <div className={styles.root}>
       <div className={styles.container}>
@@ -398,6 +537,17 @@ export default function PasskodePage() {
           {/* Main Content */}
           <div className={styles.content}>
             {/* Authentication Forms */}
+            {/* Initial choice screen: show Sign in / Sign up buttons */}
+            {status === "choose" && (
+              <div className={styles.choice}>
+                <div className={styles.choiceTitle}>Welcome to PassKode</div>
+                <div className={styles.choiceSubtitle}>Choose an option to continue</div>
+                <div className={styles.choiceButtons}>
+                  <button className={styles.btnPrimary} onClick={() => setStatus('locked')}>Sign in</button>
+                  <button className={styles.btnSecondary} onClick={() => setStatus('setup')}>Sign up</button>
+                </div>
+              </div>
+            )}
             {/* Setup Form */}
             {status === "setup" && (
               <form onSubmit={handleSetup} style={{ display: "flex", flexDirection: "column", gap: 8, maxWidth: 320, margin: "0 auto", width: "100%" }}>
@@ -446,6 +596,15 @@ export default function PasskodePage() {
                     <button className={styles.btnPrimary} type="submit">Create Vault</button>
                     <button type="button" className={styles.btnSecondary} onClick={() => setInputReveal(r => !r)}>
                       {inputReveal ? "Hide" : "Show"}
+                    </button>
+                    {/* Allow users who already have an account to go to login */}
+                    <button
+                      type="button"
+                      className={styles.btnSecondary}
+                      onClick={() => setStatus('locked')}
+                      style={{ marginLeft: 8 }}
+                    >
+                      Sign in
                     </button>
                   </div>
                 </div>
@@ -537,6 +696,31 @@ export default function PasskodePage() {
                     >
                       Change Master
                     </button>
+                    <div className={styles.searchWrapper} style={{ marginLeft: 8 }}>
+                      <input
+                        className={styles.searchInput}
+                        placeholder="Search..."
+                        value={searchQuery}
+                        onChange={(e) => setSearchQuery(e.target.value)}
+                      />
+                      <label className={styles.importNote} style={{ marginLeft: 8 }}>
+                        <input
+                          ref={(el) => { fileInputRef.current = el }}
+                          type="file"
+                          accept=".json,.csv,text/csv,application/json"
+                          style={{ display: 'none' }}
+                          onChange={(e) => handleImportFile(e.target.files ? e.target.files[0] : null)}
+                        />
+                        <button
+                          type="button"
+                          className={styles.btnSecondary}
+                          onClick={() => fileInputRef.current?.click()}
+                          style={{ marginLeft: 8 }}
+                        >
+                          Import
+                        </button>
+                      </label>
+                    </div>
                   </div>
                   <div className={styles.toolbarRight}>
                     <button className={styles.btnSecondary} onClick={handleLogout}>
@@ -642,15 +826,15 @@ export default function PasskodePage() {
 
                 {/* Password List */}
                 <div className={styles.passwordList}>
-                  {(vault.entries || []).length === 0 ? (
+                  {(!visibleEntries || visibleEntries.length === 0) ? (
                     <div className={styles.emptyState}>
                       <div className={styles.emptyIcon}>🔑</div>
-                      <div className={styles.emptyTitle}>No passwords yet</div>
+                      <div className={styles.emptyTitle}>{(vault.entries || []).length === 0 ? 'No passwords yet' : 'No matching passwords'}</div>
                       <div className={styles.emptyText}>Click "Add Password" to store your first password</div>
                     </div>
                   ) : (
                     <div className={styles.entries}>
-                      {(vault.entries || []).map((e: any) => (
+                      {visibleEntries.map((e: any) => (
                         <div key={e.id} className={styles.entry}>
                           <div className={styles.entryIcon}>
                             {e.name.charAt(0).toUpperCase()}

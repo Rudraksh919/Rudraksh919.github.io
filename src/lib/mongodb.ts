@@ -1,24 +1,21 @@
-import { MongoClient, ServerApiVersion } from 'mongodb';
+import { MongoClient } from 'mongodb';
 
-if (!process.env.MONGODB_URI) {
-  throw new Error('Please add your MongoDB URI to .env.local')
+if (!process.env.MONGO_URI) {
+  throw new Error('Please add your Mongo URI to .env.local')
 }
-
-const uri = process.env.MONGODB_URI;
-const options = {
-  serverApi: {
-    version: ServerApiVersion.v1,
-    strict: true,
-    deprecationErrors: true,
-  }
-};
 
 let client: MongoClient;
 let clientPromise: Promise<MongoClient>;
 
+const uri = process.env.MONGO_URI as string;
+const options = {
+  connectTimeoutMS: 30000,
+  maxPoolSize: 10,
+};
+
 if (process.env.NODE_ENV === 'development') {
   // In development mode, use a global variable so that the value
-  // is preserved across module reloads caused by HMR (Hot Module Replacement).
+  // is preserved across module reloads caused by HMR
   let globalWithMongo = global as typeof globalThis & {
     _mongoClientPromise?: Promise<MongoClient>
   }
@@ -29,9 +26,36 @@ if (process.env.NODE_ENV === 'development') {
   }
   clientPromise = globalWithMongo._mongoClientPromise;
 } else {
-  // In production mode, it's best to not use a global variable.
   client = new MongoClient(uri, options);
   clientPromise = client.connect();
 }
 
-export default clientPromise;
+export { clientPromise };
+
+// Helper functions for vault operations
+export async function getVault(email: string) {
+  const client = await clientPromise;
+  const collection = client.db('passkode').collection('vaults');
+  return collection.findOne({ email });
+}
+
+export async function createVault(data: any) {
+  const client = await clientPromise;
+  const collection = client.db('passkode').collection('vaults');
+  return collection.insertOne(data);
+}
+
+export async function updateVault(email: string, data: any) {
+  const client = await clientPromise;
+  const collection = client.db('passkode').collection('vaults');
+  return collection.updateOne(
+    { email },
+    { $set: data }
+  );
+}
+
+export async function deleteVault(email: string) {
+  const client = await clientPromise;
+  const collection = client.db('passkode').collection('vaults');
+  return collection.deleteOne({ email });
+}

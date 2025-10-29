@@ -1,11 +1,11 @@
 .page{
-  --bg-1: #0f1724; /* deep navy */
-  --bg-2: #071024; /* darker */
+  --bg-1: #0d0f12; /* match Passkode background */
+  --bg-2: #0a0c0e;
   --card: rgba(255,255,255,0.03);
-  --glass-border: rgba(255,255,255,0.06);
+  --glass-border: rgba(255,255,255,0.04);
 
-  --accent-1: #7c5cff; /* purple */
-  --accent-2: #00d4ff; /* cyan */
+  --accent-1: #5865f2; /* Passkode accent (blue) */
+  --accent-2: #00d4ff;
 
   --text-primary: #e6eef8;
   --text-secondary: #9fb3c8;
